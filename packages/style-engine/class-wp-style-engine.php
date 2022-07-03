@@ -168,10 +168,11 @@ class WP_Style_Engine {
 				'path'          => array( 'spacing', 'margin' ),
 			),
 			'blockGap' => array(
-				'value_func'    => 'static::get_css_custom_property_declaration',
 				'property_keys' => array(
-					'default' => 'gap',
-					'custom'  => '--wp--style--block-gap',
+					// @TODO 'grid-gap' has been deprecated in favor of 'gap'.
+					// See: https://developer.mozilla.org/en-US/docs/Web/CSS/gap.
+					// Update the white list in safecss_filter_attr (kses.php).
+					'default' => 'grid-gap',
 				),
 				'path'          => array( 'spacing', 'blockGap' ),
 			),
@@ -247,6 +248,25 @@ class WP_Style_Engine {
 		}
 
 		return self::$instance;
+	}
+
+	/**
+	 * Merges single style definitions with incoming custom style definitions.
+	 *
+	 * @param array $style_definition The internal style definition metadata.
+	 * @param array $custom_definition The custom style definition metadata to be merged.
+	 *
+	 * @return array The merged definition metadata.
+	 */
+	public static function merge_custom_style_definitions_metadata( $style_definition, $custom_definition = array() ) {
+		$valid_keys = array( 'property_keys', 'classnames' );
+		foreach ( $valid_keys as $key ) {
+			if ( isset( $custom_definition[ $key ] ) && is_array( $custom_definition[ $key ] ) ) {
+				$style_definition[ $key ] = array_merge( $style_definition[ $key ], $custom_definition[ $key ] );
+			}
+		}
+
+		return $style_definition;
 	}
 
 	/**
@@ -363,11 +383,14 @@ class WP_Style_Engine {
 		// If the input contains an array, assume box model-like properties
 		// for styles such as margins and padding.
 		if ( is_array( $style_value ) ) {
+			if ( ! isset( $style_property_keys['individual'] ) ) {
+				return $css_declarations;
+			}
 			foreach ( $style_value as $key => $value ) {
 				$individual_property                      = sprintf( $style_property_keys['individual'], _wp_to_kebab_case( $key ) );
 				$css_declarations[ $individual_property ] = $value;
 			}
-		} else {
+		} elseif ( isset( $style_property_keys['default'] ) ) {
 			$css_declarations[ $style_property_keys['default'] ] = $style_value;
 		}
 
@@ -396,13 +419,19 @@ class WP_Style_Engine {
 
 		$css_declarations = array();
 		$classnames       = array();
+		$custom_metadata  = isset( $options['custom_metadata'] ) && is_array( $options['custom_metadata'] ) ? $options['custom_metadata'] : null;
 
 		// Collect CSS and classnames.
 		foreach ( self::BLOCK_STYLE_DEFINITIONS_METADATA as $definition_group_key => $definition_group_style ) {
 			if ( empty( $block_styles[ $definition_group_key ] ) ) {
 				continue;
 			}
-			foreach ( $definition_group_style as $style_definition ) {
+			foreach ( $definition_group_style as $style_key => $style_definition ) {
+				// Merge incoming custom metadata.
+				if ( isset( $custom_metadata[ "$definition_group_key.$style_key" ] ) ) {
+					$style_definition = static::merge_custom_style_definitions_metadata( $style_definition, $custom_metadata[ "$definition_group_key.$style_key" ] );
+				}
+
 				$style_value = _wp_array_get( $block_styles, $style_definition['path'], null );
 
 				if ( ! static::is_valid_style_value( $style_value ) ) {
@@ -422,6 +451,8 @@ class WP_Style_Engine {
 		if ( ! empty( $css_declarations ) ) {
 			// Generate inline style declarations.
 			foreach ( $css_declarations as $css_property => $css_value ) {
+				// @TODO The safecss_filter_attr_allow_css filter in safecss_filter_attr (kses.php) does not let through CSS custom variables.
+				// So we have to be strict about them here.
 				$filtered_css_declaration = isset( static::VALID_CUSTOM_PROPERTIES[ $css_property ] ) ? esc_html( "{$css_property}: {$css_value}" ) : esc_html( safecss_filter_attr( "{$css_property}: {$css_value}" ) );
 				if ( ! empty( $filtered_css_declaration ) ) {
 					if ( $should_prettify ) {
@@ -513,20 +544,6 @@ class WP_Style_Engine {
 			}
 		}
 		return $css_declarations;
-	}
-
-
-	protected static function get_css_custom_property_declaration( $style_value, $style_definition, $options ) {
-		// For block gap. TESTING!!!
-		// This only works for static::ROOT_BLOCK_SELECTOR right now.
-		// We'll need to support both `blockGap: 1px` and `--wp--style--block-gap: 1px`
-		$is_root_layer = isset( $options['layer'] ) && 0 === $options['layer'];
-		if ( $is_root_layer && isset( $style_definition['property_keys']['custom'] ) ) {
-			$rules[ $style_definition['property_keys']['custom'] ] = $style_value;
-		} else {
-			$rules[ $style_definition['property_keys']['default'] ] = $style_value;
-		}
-		return $rules;
 	}
 }
 
